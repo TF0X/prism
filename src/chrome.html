@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Prism</title>
+<style>
+  :root {
+    --bar: 76px;
+    --edge: 6px;
+    --glass: rgba(22, 22, 29, 0.58);
+    --glass-hi: rgba(255, 255, 255, 0.07);
+    --ink: rgba(255, 255, 255, 0.88);
+    --ink-dim: rgba(255, 255, 255, 0.46);
+    --accent: #7FA6FF;
+    --radius: 9px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    background: transparent;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+                 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    cursor: default;
+  }
+
+  /* The middle is a hole: the content webview sits on top of it. */
+  #hole { position: fixed; inset: var(--bar) var(--edge) var(--edge); pointer-events: none; }
+
+  /* ---------- top bar ---------- */
+  #bar {
+    position: fixed; top: 0; left: 0; right: 0; height: var(--bar);
+    display: flex; flex-direction: column;
+    background: var(--glass);
+    backdrop-filter: blur(32px) saturate(180%);
+    -webkit-backdrop-filter: blur(32px) saturate(180%);
+    box-shadow: inset 0 -1px 0 var(--glass-hi);
+  }
+
+  /* ---------- tab strip ---------- */
+  #strip {
+    height: 38px; display: flex; align-items: flex-end; gap: 2px;
+    padding: 0 6px 0 10px;
+  }
+
+  #grip {
+    width: 16px; height: 26px; flex: 0 0 auto; cursor: grab;
+    display: grid; grid-template-columns: 3px 3px; grid-auto-rows: 3px;
+    gap: 3px; align-content: center; justify-content: center;
+    opacity: .3; margin-bottom: 4px;
+  }
+  #grip:hover { opacity: .65; }
+  #grip:active { cursor: grabbing; }
+  #grip i { background: #fff; border-radius: 50%; }
+
+  #tabs {
+    flex: 1 1 auto; display: flex; align-items: flex-end; gap: 2px;
+    overflow: hidden; margin-bottom: 0;
+  }
+
+  .tab {
+    position: relative;
+    display: flex; align-items: center; gap: 7px;
+    height: 30px; min-width: 0; max-width: 190px; flex: 1 1 140px;
+    padding: 0 6px 0 11px;
+    border-radius: var(--radius) var(--radius) 0 0;
+    font-size: 12px; color: var(--ink-dim);
+    background: transparent;
+    transition: background .16s ease, color .16s ease;
+  }
+  .tab:hover { background: rgba(255, 255, 255, 0.06); color: var(--ink); }
+  .tab.on {
+    background: rgba(255, 255, 255, 0.11);
+    color: var(--ink);
+    box-shadow: inset 0 1px 0 var(--glass-hi);
+  }
+  .tab.on::after {
+    content: ""; position: absolute; left: 10px; right: 10px; top: 0; height: 2px;
+    border-radius: 2px; background: var(--accent);
+  }
+  .tab .t { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tab .x {
+    flex: 0 0 auto; width: 17px; height: 17px; border: 0; border-radius: 5px;
+    background: transparent; color: inherit; font-size: 13px; line-height: 1;
+    cursor: pointer; opacity: 0; transition: opacity .14s ease, background .14s ease;
+  }
+  .tab:hover .x, .tab.on .x { opacity: .6; }
+  .tab .x:hover { background: rgba(255, 255, 255, 0.16); opacity: 1; }
+
+  .spin {
+    width: 11px; height: 11px; flex: 0 0 auto; border-radius: 50%;
+    border: 1.5px solid rgba(255,255,255,.22);
+    border-top-color: var(--accent);
+    animation: sp .7s linear infinite;
+  }
+  @keyframes sp { to { transform: rotate(360deg); } }
+
+  #plus {
+    flex: 0 0 auto; width: 26px; height: 26px; margin-bottom: 2px;
+    border: 0; border-radius: 7px; background: transparent;
+    color: var(--ink-dim); font-size: 16px; line-height: 1; cursor: pointer;
+    transition: background .15s ease, color .15s ease;
+  }
+  #plus:hover { background: rgba(255,255,255,.1); color: var(--ink); }
+
+  #wins { flex: 0 0 auto; display: flex; gap: 6px; padding-left: 8px; margin-bottom: 6px; }
+  .wb {
+    width: 13px; height: 13px; border: 0; border-radius: 50%; padding: 0;
+    background: rgba(255,255,255,.15); cursor: pointer;
+    transition: background .15s ease, transform .15s ease;
+  }
+  .wb:hover { transform: scale(1.15); }
+  .wb.min:hover { background: #FEBC2E; }
+  .wb.cls:hover { background: #FF5F57; }
+
+  /* ---------- nav row ---------- */
+  #nav {
+    height: 38px; display: flex; align-items: center; gap: 4px; padding: 0 10px;
+  }
+  .nb {
+    flex: 0 0 auto; width: 27px; height: 27px; border: 0; border-radius: 7px;
+    background: transparent; color: var(--ink-dim); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background .15s ease, color .15s ease;
+  }
+  .nb:hover:not(:disabled) { background: rgba(255,255,255,.1); color: var(--ink); }
+  .nb:disabled { opacity: .26; cursor: default; }
+  .nb svg { width: 15px; height: 15px; fill: none; stroke: currentColor;
+            stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+
+  #omni {
+    flex: 1 1 auto; display: flex; align-items: center; gap: 8px;
+    height: 29px; padding: 0 11px; margin: 0 4px;
+    border-radius: 15px;
+    background: rgba(255, 255, 255, 0.06);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.06);
+    transition: background .16s ease, box-shadow .16s ease;
+  }
+  #omni:focus-within {
+    background: rgba(255, 255, 255, 0.1);
+    box-shadow: inset 0 0 0 1px rgba(127, 166, 255, 0.5),
+                0 0 0 3px rgba(127, 166, 255, 0.12);
+  }
+  #lock { flex: 0 0 auto; width: 13px; height: 13px; opacity: .72; }
+  #lock svg { width: 13px; height: 13px; fill: none; stroke: currentColor;
+              stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  #lock.secure { color: #6FD39A; }
+  #lock.insecure { color: #E8A33D; }
+
+  #url {
+    flex: 1 1 auto; min-width: 0; border: 0; outline: 0; background: transparent;
+    color: var(--ink); font: inherit; font-size: 12.5px;
+    user-select: text; cursor: text;
+  }
+  #url::placeholder { color: rgba(255,255,255,.3); }
+
+  #glass {
+    flex: 0 0 auto; width: 27px; height: 27px; border: 0; border-radius: 7px;
+    background: transparent; color: var(--ink-dim); cursor: pointer;
+    font-size: 12px; transition: background .15s ease, color .15s ease;
+  }
+  #glass:hover { background: rgba(255,255,255,.1); color: var(--ink); }
+  #glass.lit { color: var(--accent); background: rgba(127,166,255,.14); }
+
+  /* ---------- resize grips on the 6px frame ---------- */
+  .rz { position: fixed; }
+  .rz.n  { top: 0; left: 0; right: 0; height: 3px; cursor: ns-resize; }
+  .rz.s  { bottom: 0; left: 0; right: 0; height: var(--edge); cursor: ns-resize; }
+  .rz.w  { left: 0; top: 0; bottom: 0; width: var(--edge); cursor: ew-resize; }
+  .rz.e  { right: 0; top: 0; bottom: 0; width: var(--edge); cursor: ew-resize; }
+  .rz.nw { top: 0; left: 0; width: 14px; height: 14px; cursor: nwse-resize; }
+  .rz.ne { top: 0; right: 0; width: 14px; height: 14px; cursor: nesw-resize; }
+  .rz.sw { bottom: 0; left: 0; width: 14px; height: 14px; cursor: nesw-resize; }
+  .rz.se { bottom: 0; right: 0; width: 14px; height: 14px; cursor: nwse-resize; }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <div id="strip">
+      <div id="grip" title="Drag to move"></div>
+      <div id="tabs"></div>
+      <button id="plus" title="New tab (Ctrl+T)">+</button>
+      <div id="wins">
+        <button class="wb cls" title="Close"></button>
+        <button class="wb min" title="Minimize"></button>
+      </div>
+    </div>
+    <div id="nav">
+      <button class="nb" id="back" title="Back" disabled>
+        <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+      </button>
+      <button class="nb" id="fwd" title="Forward" disabled>
+        <svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
+      </button>
+      <button class="nb" id="reload" title="Reload (Ctrl+R)">
+        <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 10-2.3 5.7"/><path d="M20 5v6h-6"/></svg>
+      </button>
+      <div id="omni">
+        <span id="lock"></span>
+        <input id="url" type="text" spellcheck="false" autocomplete="off"
+               placeholder="Search or enter address">
+      </div>
+      <button id="glass" title="Page glass">&#9681;</button>
+    </div>
+  </div>
+
+  <div id="hole"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  function send(action, extra) {
+    var m = { action: action };
+    if (extra) for (var k in extra) m[k] = extra[k];
+    try { window.ipc.postMessage(JSON.stringify(m)); } catch (e) {}
+  }
+
+  // ---------- window controls ----------
+  document.querySelector(".wb.cls").onclick = function () { send("close"); };
+  document.querySelector(".wb.min").onclick = function () { send("minimize"); };
+
+  function dragFrom(node) {
+    node.addEventListener("mousedown", function (e) {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      send("drag");
+    });
+  }
+  dragFrom($("grip"));
+
+  var g = $("grip");
+  for (var i = 0; i < 6; i++) g.appendChild(document.createElement("i"));
+
+  ["n","s","w","e","nw","ne","sw","se"].forEach(function (d) {
+    var el = document.createElement("div");
+    el.className = "rz " + d;
+    el.addEventListener("mousedown", function (e) {
+      if (e.button !== 0) return;
+      e.preventDefault(); e.stopPropagation();
+      send("resize", { dir: d });
+    });
+    document.body.appendChild(el);
+  });
+
+  // Empty space on the tab strip drags the window too.
+  $("strip").addEventListener("mousedown", function (e) {
+    if (e.button !== 0) return;
+    if (e.target.closest(".tab, button, #grip")) return;
+    e.preventDefault();
+    send("drag");
+  });
+
+  // ---------- nav ----------
+  $("back").onclick = function () { send("back"); };
+  $("fwd").onclick = function () { send("forward"); };
+  $("reload").onclick = function () { send("reload"); };
+  $("plus").onclick = function () { send("newtab"); };
+  $("glass").onclick = function () { send("glasscycle"); };
+
+  var url = $("url");
+  url.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { send("navigate", { text: url.value }); url.blur(); }
+    else if (e.key === "Escape") { url.blur(); }
+  });
+  url.addEventListener("focus", function () { url.select(); });
+
+  // ---------- tabs ----------
+  var tabs = [];
+
+  function renderTabs() {
+    var host = $("tabs");
+    host.textContent = "";
+    tabs.forEach(function (t) {
+      var el = document.createElement("div");
+      el.className = "tab" + (t.active ? " on" : "");
+      el.title = t.title || "";
+
+      if (t.loading) {
+        var s = document.createElement("div");
+        s.className = "spin";
+        el.appendChild(s);
+      }
+
+      var label = document.createElement("span");
+      label.className = "t";
+      label.textContent = t.title || "New tab";
+      el.appendChild(label);
+
+      var x = document.createElement("button");
+      x.className = "x";
+      x.textContent = "×";
+      x.onclick = function (ev) { ev.stopPropagation(); send("closetab", { id: t.id }); };
+      el.appendChild(x);
+
+      el.onmousedown = function (ev) {
+        if (ev.button === 1) { ev.preventDefault(); send("closetab", { id: t.id }); }
+        else if (ev.button === 0) send("selecttab", { id: t.id });
+      };
+      host.appendChild(el);
+    });
+  }
+
+  // ---------- host -> chrome ----------
+  window.__prism = {
+    tabs: function (list) { tabs = list || []; renderTabs(); },
+
+    nav: function (s) {
+      if (document.activeElement !== url) url.value = s.url || "";
+      $("back").disabled = !s.canBack;
+      $("fwd").disabled = !s.canFwd;
+
+      var lock = $("lock");
+      lock.className = s.secure ? "secure" : (s.url ? "insecure" : "");
+      lock.textContent = "";
+      if (s.url) {
+        var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.setAttribute("viewBox", "0 0 24 24");
+        var p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        // closed padlock for https, open shackle otherwise
+        p.setAttribute("d", s.secure
+          ? "M6 11h12v9H6zM9 11V7a3 3 0 016 0v4"
+          : "M6 11h12v9H6zM9 11V7a3 3 0 015.6-1.5");
+        svg.appendChild(p);
+        lock.appendChild(svg);
+      }
+    },
+
+    glass: function (level, name) {
+      var b = $("glass");
+      b.classList.toggle("lit", level > 0);
+      b.title = "Page glass: " + name;
+      b.textContent = level === 0 ? "○" : level === 1 ? "◑" : "●";
+    },
+
+    focusUrl: function () { url.focus(); url.select(); }
+  };
+
+  send("ready");
+})();
+</script>
+</body>
+</html>
