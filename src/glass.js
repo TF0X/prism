@@ -119,10 +119,20 @@
     }
   }
 
+  /// Drops the inline backgrounds we put on <html>/<body>.
+  function clearRoot() {
+    [document.documentElement, document.body].forEach(function (e) {
+      if (!e) return;
+      e.style.removeProperty("background-color");
+      e.style.removeProperty("background-image");
+    });
+  }
+
   function paint() {
     restore();
     var tag = document.getElementById(STYLE_ID);
     if (!level) {
+      clearRoot();
       if (tag) tag.remove();
       return;
     }
@@ -132,11 +142,26 @@
       (document.head || document.documentElement).appendChild(tag);
     }
     tag.textContent = "";          // clear ours so the sample sees real colours
+    clearRoot();
     captureBase();
+
+    // Set on the elements themselves, not in our stylesheet. A site's own
+    // sheet loads *after* ours, so with both carrying !important the site
+    // wins on order -- which is exactly why YouTube stayed opaque. An inline
+    // declaration outranks every stylesheet regardless of order.
+    var root = document.documentElement;
+    root.style.setProperty(
+      "background-color",
+      "rgba(" + base + "," + LEVELS[level].alpha + ")",
+      "important"
+    );
+    root.style.setProperty("background-image", "none", "important");
+    if (document.body) {
+      document.body.style.setProperty("background-color", "transparent", "important");
+      document.body.style.setProperty("background-image", "none", "important");
+    }
+
     tag.textContent =
-      "html{background-color:rgba(" + base + "," + LEVELS[level].alpha + ")!important;" +
-      "background-image:none!important}" +
-      "body{background-color:transparent!important;background-image:none!important}" +
       "*,*::before,*::after{backdrop-filter:none!important;-webkit-backdrop-filter:none!important}";
     clearSurfaces(document.body || document.documentElement);
   }
