@@ -8,7 +8,7 @@ use tao::{
     dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
     event::{Event, StartCause, WindowEvent},
     event_loop::{ControlFlow, EventLoopBuilder},
-    window::{ResizeDirection, WindowBuilder},
+    window::{ResizeDirection, Window, WindowBuilder},
 };
 use wry::{
     NewWindowResponse, PageLoadEvent, Rect, WebContext, WebView, WebViewBuilder,
@@ -128,11 +128,16 @@ fn serve(req: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
         .unwrap()
 }
 
-fn chrome_rect(size: PhysicalSize<u32>) -> Rect {
-    Rect {
-        position: PhysicalPosition::new(0, 0).into(),
-        size: PhysicalSize::new(size.width.max(1), CHROME_H).into(),
-    }
+/// Chrome's strip in *screen* coordinates. It is its own top-level window, so
+/// a child webview cannot composite with the acrylic backdrop any more than a
+/// tab could; giving it a window of its own is what makes the bar see-through.
+fn chrome_geom(main: &Window) -> (PhysicalPosition<i32>, PhysicalSize<u32>) {
+    let size = main.inner_size();
+    let origin = main.inner_position().unwrap_or(PhysicalPosition::new(0, 0));
+    (
+        PhysicalPosition::new(origin.x, origin.y),
+        PhysicalSize::new(size.width.max(1), CHROME_H),
+    )
 }
 
 /// `trusted` is false for messages arriving from a web page. Pages get the
@@ -244,12 +249,37 @@ fn main() -> wry::Result<()> {
 
     let content = cb.build(&window)?;
 
-    // Chrome: a child webview along the bottom. Child HWNDs cannot composite
-    // transparently, but keeping it on its own origin is what stops a page
-    // from reading or spoofing the address bar.
+    // Chrome lives in its own borderless window owned by the main one, for the
+    // same reason tabs would: a child webview gets an opaque surface, so the
+    // bar could never be see-through. Its own window also keeps it on a
+    // separate origin, which is what stops a page spoofing the address bar.
+    let (cpos, csize) = chrome_geom(&window);
+    #[allow(unused_mut)]
+    let mut cwb = WindowBuilder::new()
+        .with_decorations(false)
+        .with_transparent(true)
+        .with_resizable(false)
+        .with_inner_size(csize)
+        .with_position(cpos);
+
+    #[cfg(target_os = "windows")]
+    {
+        use tao::platform::windows::{WindowBuilderExtWindows, WindowExtWindows};
+        cwb = cwb
+            .with_owner_window(window.hwnd())
+            .with_skip_taskbar(true)
+            .with_undecorated_shadow(false);
+    }
+
+    let chrome_win = cwb.build(&event_loop).unwrap();
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = window_vibrancy::apply_acrylic(&chrome_win, None);
+    }
+
     let p_chrome = proxy.clone();
     let chrome = WebViewBuilder::new()
-        .with_bounds(chrome_rect(window.inner_size()))
         .with_transparent(true)
         .with_custom_protocol("prism".into(), |_id, req| serve(&req))
         .with_url("prism://localhost/index.html")
@@ -258,8 +288,9 @@ fn main() -> wry::Result<()> {
                 let _ = p_chrome.send_event(ev);
             }
         })
-        .build_as_child(&window)?;
+        .build(&chrome_win)?;
 
+    let main_id = window.id();
     let mut tabs: Vec<Tab> = vec![Tab {
         id: 1,
         url: HOME.to_owned(),
@@ -475,13 +506,27 @@ fn main() -> wry::Result<()> {
                 }
             }
 
+            // Chrome is top-level now, so it does not follow the main window.
             Event::WindowEvent {
+                window_id,
                 event: WindowEvent::Resized(size),
                 ..
-            } => {
+            } if window_id == main_id => {
                 if size.width > 0 && size.height > 0 {
-                    let _ = chrome.set_bounds(chrome_rect(size));
+                    let (p, s) = chrome_geom(&window);
+                    chrome_win.set_outer_position(p);
+                    chrome_win.set_inner_size(s);
                 }
+            }
+
+            Event::WindowEvent {
+                window_id,
+                event: WindowEvent::Moved(_),
+                ..
+            } if window_id == main_id => {
+                let (p, s) = chrome_geom(&window);
+                chrome_win.set_outer_position(p);
+                chrome_win.set_inner_size(s);
             }
 
             Event::UserEvent(Ev::Close)
