@@ -146,21 +146,24 @@
     timer = setTimeout(paint, 350);
   }
 
-  // Keeps page content clear of the chrome bar along the bottom of the window.
-  function reserveFooter(px) {
-    var id = "__prism_footer";
-    var tag = document.getElementById(id);
-    if (!tag) {
-      tag = document.createElement("style");
-      tag.id = id;
-      (document.head || document.documentElement).appendChild(tag);
-    }
-    tag.textContent = "body{padding-bottom:" + px + "px!important}";
+  // Pushes the page clear of the chrome bar across the top of the window.
+  //
+  // Padding alone is not enough: the content webview always fills the window,
+  // and a site's `position: fixed` header would still anchor to the viewport
+  // top, landing underneath our bar. A transform on <html> makes it the
+  // containing block for fixed descendants, so those land below the bar too.
+  function reserveHeader(px) {
+    var root = document.documentElement;
+    root.style.setProperty("transform", "translateY(" + px + "px)", "important");
+    root.style.setProperty("height", "calc(100% - " + px + "px)", "important");
   }
 
   window.__prismGlass = function (n, chromeH) {
     level = Math.max(0, Math.min(LEVELS.length - 1, n | 0));
-    if (chromeH) reserveFooter(chromeH);
+    if (chromeH) {
+      reserveHeader(chromeH);
+      grips(chromeH);
+    }
     paint();
     send("diag", {
       msg: "glass=" + level +
@@ -172,22 +175,31 @@
 
   // The chrome webview only covers the bottom strip, so the other window edges
   // have to offer their own resize grips from inside the page.
-  function grips() {
-    if (document.getElementById("__prism_grips")) return;
-    var host = document.createElement("div");
+  // Chrome owns the top edges; the page supplies the rest. The host carries an
+  // inverse translate because it sits inside the transformed <html> and would
+  // otherwise be pushed down along with the page.
+  function grips(offset) {
+    var host = document.getElementById("__prism_grips");
+    if (host) {
+      host.style.setProperty("transform", "translateY(" + -offset + "px)", "important");
+      return;
+    }
+    host = document.createElement("div");
     host.id = "__prism_grips";
+    host.style.setProperty("transform", "translateY(" + -offset + "px)", "important");
     var sh = host.attachShadow({ mode: "closed" });
     var st = document.createElement("style");
     st.textContent =
-      ":host{all:initial;position:fixed;inset:0;z-index:2147483647;pointer-events:none}" +
+      ":host{all:initial;position:fixed;left:0;top:0;width:100vw;height:100vh;" +
+      "z-index:2147483647;pointer-events:none}" +
       ".g{position:absolute;pointer-events:auto}" +
-      ".n{top:0;left:0;right:0;height:5px;cursor:ns-resize}" +
+      ".s{bottom:0;left:0;right:0;height:5px;cursor:ns-resize}" +
       ".w{left:0;top:0;bottom:0;width:5px;cursor:ew-resize}" +
       ".e{right:0;top:0;bottom:0;width:5px;cursor:ew-resize}" +
-      ".nw{top:0;left:0;width:13px;height:13px;cursor:nwse-resize}" +
-      ".ne{top:0;right:0;width:13px;height:13px;cursor:nesw-resize}";
+      ".sw{bottom:0;left:0;width:13px;height:13px;cursor:nesw-resize}" +
+      ".se{bottom:0;right:0;width:13px;height:13px;cursor:nwse-resize}";
     sh.appendChild(st);
-    ["n", "w", "e", "nw", "ne"].forEach(function (d) {
+    ["s", "w", "e", "sw", "se"].forEach(function (d) {
       var g = document.createElement("div");
       g.className = "g " + d;
       g.addEventListener("mousedown", function (e) {
@@ -207,7 +219,6 @@
         .observe(document.body, { childList: true, subtree: true });
     }
     addEventListener("resize", function () { if (level) settle(); }, { passive: true });
-    grips();
     send("ready");
   }
 

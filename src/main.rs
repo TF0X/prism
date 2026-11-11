@@ -18,11 +18,11 @@ use wry::{
 const CHROME_HTML: &str = include_str!("chrome.html");
 const GLASS_JS: &str = include_str!("glass.js");
 
-/// Chrome sits along the bottom. It cannot sit on top: a non-child webview is
-/// force-resized to the full window on every WM_SIZE by wry's subclass proc,
-/// so it can never be inset below a top bar -- and only a *non-child* webview
-/// composites transparently with the DWM acrylic backdrop. Bottom also means
-/// sites' sticky top headers keep working.
+/// Chrome overlays the top of the window. The content webview cannot be inset
+/// below it: only a *non-child* webview composites with the acrylic backdrop,
+/// and wry force-resizes those to the full window on every WM_SIZE (its
+/// set_bounds calls SetWindowPos on the app window itself). So the page is
+/// pushed down from inside instead -- see the offset in glass.js.
 const CHROME_H: u32 = 76;
 
 const HOME: &str = "https://www.youtube.com";
@@ -130,7 +130,7 @@ fn serve(req: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
 
 fn chrome_rect(size: PhysicalSize<u32>) -> Rect {
     Rect {
-        position: PhysicalPosition::new(0, size.height.saturating_sub(CHROME_H) as i32).into(),
+        position: PhysicalPosition::new(0, 0).into(),
         size: PhysicalSize::new(size.width.max(1), CHROME_H).into(),
     }
 }

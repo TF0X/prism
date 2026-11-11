@@ -166,13 +166,13 @@
 
   /* ---------- resize grips on the 6px frame ---------- */
   .rz { position: fixed; }
-  /* Only the window's bottom edges belong here; the top and sides are gripped
-     from inside the page, which is what covers them. */
-  .rz.s  { bottom: 0; left: 0; right: 0; height: var(--edge); cursor: ns-resize; }
+  /* Only the window's top edges belong here; the rest are gripped from inside
+     the page, which is what covers them. */
+  .rz.n  { top: 0; left: 0; right: 0; height: var(--edge); cursor: ns-resize; }
   .rz.w  { left: 0; top: 0; bottom: 0; width: var(--edge); cursor: ew-resize; }
   .rz.e  { right: 0; top: 0; bottom: 0; width: var(--edge); cursor: ew-resize; }
-  .rz.sw { bottom: 0; left: 0; width: 14px; height: 14px; cursor: nesw-resize; }
-  .rz.se { bottom: 0; right: 0; width: 14px; height: 14px; cursor: nwse-resize; }
+  .rz.nw { top: 0; left: 0; width: 14px; height: 14px; cursor: nwse-resize; }
+  .rz.ne { top: 0; right: 0; width: 14px; height: 14px; cursor: nesw-resize; }
 </style>
 </head>
 <body>
@@ -234,7 +234,7 @@
   var g = $("grip");
   for (var i = 0; i < 6; i++) g.appendChild(document.createElement("i"));
 
-  ["s","w","e","sw","se"].forEach(function (d) {
+  ["n","w","e","nw","ne"].forEach(function (d) {
     var el = document.createElement("div");
     el.className = "rz " + d;
     el.addEventListener("mousedown", function (e) {
