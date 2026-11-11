@@ -210,7 +210,7 @@ fn main() -> wry::Result<()> {
     {
         use tao::platform::windows::WindowExtWindows;
         window.set_undecorated_shadow(true);
-        let _ = window_vibrancy::apply_acrylic(&window, None);
+        backdrop(&window);
     }
 
     let ctx: &'static mut WebContext =
@@ -275,7 +275,7 @@ fn main() -> wry::Result<()> {
 
     #[cfg(target_os = "windows")]
     {
-        let _ = window_vibrancy::apply_acrylic(&chrome_win, None);
+        backdrop(&chrome_win);
     }
 
     let p_chrome = proxy.clone();
@@ -542,6 +542,23 @@ fn main() -> wry::Result<()> {
         }
     });
 }
+
+/// What sits behind the page.
+///
+/// Not `apply_acrylic`: on Windows 11 that takes the DWM system-backdrop path,
+/// which is a heavily tinted frost whose colour cannot be adjusted -- on a dark
+/// theme it just reads as dark grey rather than see-through. `PRISM_BLUR=1`
+/// opts into the legacy blur-behind, which frosts but stays lighter. The
+/// default is no backdrop at all, so transparent regions show the desktop.
+#[cfg(target_os = "windows")]
+fn backdrop(win: &Window) {
+    if std::env::var_os("PRISM_BLUR").is_some() {
+        let _ = window_vibrancy::apply_blur(win, Some((0, 0, 0, 40)));
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn backdrop(_: &Window) {}
 
 /// Freezes the renderer. State is retained, so scroll position and typed text
 /// survive; returns whether it actually suspended.
