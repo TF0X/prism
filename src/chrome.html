@@ -29,12 +29,9 @@
     cursor: default;
   }
 
-  /* The middle is a hole: the content webview sits on top of it. */
-  #hole { position: fixed; inset: var(--bar) var(--edge) var(--edge); pointer-events: none; }
-
-  /* ---------- top bar ---------- */
+  /* ---------- the bar (this webview *is* the bottom strip) ---------- */
   #bar {
-    position: fixed; top: 0; left: 0; right: 0; height: var(--bar);
+    position: fixed; inset: 0;
     display: flex; flex-direction: column;
     background: var(--glass);
     backdrop-filter: blur(32px) saturate(180%);
@@ -169,12 +166,11 @@
 
   /* ---------- resize grips on the 6px frame ---------- */
   .rz { position: fixed; }
-  .rz.n  { top: 0; left: 0; right: 0; height: 3px; cursor: ns-resize; }
+  /* Only the window's bottom edges belong here; the top and sides are gripped
+     from inside the page, which is what covers them. */
   .rz.s  { bottom: 0; left: 0; right: 0; height: var(--edge); cursor: ns-resize; }
   .rz.w  { left: 0; top: 0; bottom: 0; width: var(--edge); cursor: ew-resize; }
   .rz.e  { right: 0; top: 0; bottom: 0; width: var(--edge); cursor: ew-resize; }
-  .rz.nw { top: 0; left: 0; width: 14px; height: 14px; cursor: nwse-resize; }
-  .rz.ne { top: 0; right: 0; width: 14px; height: 14px; cursor: nesw-resize; }
   .rz.sw { bottom: 0; left: 0; width: 14px; height: 14px; cursor: nesw-resize; }
   .rz.se { bottom: 0; right: 0; width: 14px; height: 14px; cursor: nwse-resize; }
 </style>
@@ -209,7 +205,6 @@
     </div>
   </div>
 
-  <div id="hole"></div>
 
 <script>
 (function () {
@@ -239,7 +234,7 @@
   var g = $("grip");
   for (var i = 0; i < 6; i++) g.appendChild(document.createElement("i"));
 
-  ["n","s","w","e","nw","ne","sw","se"].forEach(function (d) {
+  ["s","w","e","sw","se"].forEach(function (d) {
     var el = document.createElement("div");
     el.className = "rz " + d;
     el.addEventListener("mousedown", function (e) {

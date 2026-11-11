@@ -146,10 +146,60 @@
     timer = setTimeout(paint, 350);
   }
 
-  window.__prismGlass = function (n) {
+  // Keeps page content clear of the chrome bar along the bottom of the window.
+  function reserveFooter(px) {
+    var id = "__prism_footer";
+    var tag = document.getElementById(id);
+    if (!tag) {
+      tag = document.createElement("style");
+      tag.id = id;
+      (document.head || document.documentElement).appendChild(tag);
+    }
+    tag.textContent = "body{padding-bottom:" + px + "px!important}";
+  }
+
+  window.__prismGlass = function (n, chromeH) {
     level = Math.max(0, Math.min(LEVELS.length - 1, n | 0));
+    if (chromeH) reserveFooter(chromeH);
     paint();
+    send("diag", {
+      msg: "glass=" + level +
+        " base=" + base +
+        " cleared=" + touched.length +
+        " htmlbg=" + getComputedStyle(document.documentElement).backgroundColor
+    });
   };
+
+  // The chrome webview only covers the bottom strip, so the other window edges
+  // have to offer their own resize grips from inside the page.
+  function grips() {
+    if (document.getElementById("__prism_grips")) return;
+    var host = document.createElement("div");
+    host.id = "__prism_grips";
+    var sh = host.attachShadow({ mode: "closed" });
+    var st = document.createElement("style");
+    st.textContent =
+      ":host{all:initial;position:fixed;inset:0;z-index:2147483647;pointer-events:none}" +
+      ".g{position:absolute;pointer-events:auto}" +
+      ".n{top:0;left:0;right:0;height:5px;cursor:ns-resize}" +
+      ".w{left:0;top:0;bottom:0;width:5px;cursor:ew-resize}" +
+      ".e{right:0;top:0;bottom:0;width:5px;cursor:ew-resize}" +
+      ".nw{top:0;left:0;width:13px;height:13px;cursor:nwse-resize}" +
+      ".ne{top:0;right:0;width:13px;height:13px;cursor:nesw-resize}";
+    sh.appendChild(st);
+    ["n", "w", "e", "nw", "ne"].forEach(function (d) {
+      var g = document.createElement("div");
+      g.className = "g " + d;
+      g.addEventListener("mousedown", function (e) {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        send("resize", { dir: d });
+      });
+      sh.appendChild(g);
+    });
+    document.documentElement.appendChild(host);
+  }
 
   function start() {
     if (document.body) {
@@ -157,6 +207,7 @@
         .observe(document.body, { childList: true, subtree: true });
     }
     addEventListener("resize", function () { if (level) settle(); }, { passive: true });
+    grips();
     send("ready");
   }
 

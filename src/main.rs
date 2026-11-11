@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use tao::{
     dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
     event::{Event, StartCause, WindowEvent},
-    event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
-    window::{ResizeDirection, Window, WindowBuilder},
+    event_loop::{ControlFlow, EventLoopBuilder},
+    window::{ResizeDirection, WindowBuilder},
 };
 use wry::{
     NewWindowResponse, PageLoadEvent, Rect, WebContext, WebView, WebViewBuilder,
@@ -18,18 +18,22 @@ use wry::{
 const CHROME_HTML: &str = include_str!("chrome.html");
 const GLASS_JS: &str = include_str!("glass.js");
 
-/// Height of our own chrome strip, and the glass frame around the content.
+/// Chrome sits along the bottom. It cannot sit on top: a non-child webview is
+/// force-resized to the full window on every WM_SIZE by wry's subclass proc,
+/// so it can never be inset below a top bar -- and only a *non-child* webview
+/// composites transparently with the DWM acrylic backdrop. Bottom also means
+/// sites' sticky top headers keep working.
 const CHROME_H: u32 = 76;
-const EDGE: u32 = 6;
 
-const HOME: &str = "https://duckduckgo.com";
-/// Background tabs freeze after this long untouched.
+const HOME: &str = "https://www.youtube.com";
+/// Freeze the renderer once the window has been minimized this long.
 const IDLE: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_secs(15);
 
 enum Ev {
+    Diag(String),
     ChromeReady,
-    TabReady(u32),
+    PageReady,
     NewTab(Option<String>),
     CloseTab(u32),
     SelectTab(u32),
@@ -38,8 +42,8 @@ enum Ev {
     Forward,
     Reload,
     GlassCycle,
-    Title(u32, String),
-    Load(u32, bool, String),
+    Title(String),
+    Load(bool, String),
     FocusUrl,
     Drag,
     Resize(ResizeDirection),
@@ -49,13 +53,8 @@ enum Ev {
 
 struct Tab {
     id: u32,
-    view: WebView,
-    title: String,
     url: String,
-    loading: bool,
-    /// Last time this tab was the active one; drives the freeze timer.
-    touched: Instant,
-    frozen: bool,
+    title: String,
 }
 
 fn state_dir() -> PathBuf {
@@ -82,8 +81,21 @@ fn save_glass(level: u8) {
     );
 }
 
-/// Turns whatever was typed into the address bar into a URL. Anything that is
-/// not plausibly a host becomes a search, the way an address bar should behave.
+fn diag(msg: &str) {
+    if std::env::var_os("PRISM_DIAG").is_none() {
+        return;
+    }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(state_dir().join("diag.log"))
+    {
+        let _ = writeln!(f, "{msg}");
+    }
+}
+
+/// Turns address-bar text into a URL; anything not plausibly a host searches.
 fn to_url(text: &str) -> String {
     let t = text.trim();
     if t.is_empty() {
@@ -93,9 +105,9 @@ fn to_url(text: &str) -> String {
         return t.to_owned();
     }
     let first = t.split('/').next().unwrap_or(t);
-    let looks_like_host =
+    let host_like =
         !t.contains(' ') && first.contains('.') && !first.starts_with('.') && !first.ends_with('.');
-    if looks_like_host || t.starts_with("localhost") {
+    if host_like || t.starts_with("localhost") {
         format!("https://{t}")
     } else {
         format!(
@@ -116,40 +128,27 @@ fn serve(req: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
         .unwrap()
 }
 
-fn content_rect(size: PhysicalSize<u32>) -> Rect {
+fn chrome_rect(size: PhysicalSize<u32>) -> Rect {
     Rect {
-        position: PhysicalPosition::new(EDGE as i32, CHROME_H as i32).into(),
-        size: PhysicalSize::new(
-            size.width.saturating_sub(EDGE * 2).max(1),
-            size.height.saturating_sub(CHROME_H + EDGE).max(1),
-        )
-        .into(),
+        position: PhysicalPosition::new(0, size.height.saturating_sub(CHROME_H) as i32).into(),
+        size: PhysicalSize::new(size.width.max(1), CHROME_H).into(),
     }
 }
 
-/// Parses an IPC message into an event. Shared by the chrome webview and every
-/// tab, with `tab` set for the latter so page-side messages carry their origin.
-fn parse(body: &str, tab: Option<u32>) -> Option<Ev> {
+/// `trusted` is false for messages arriving from a web page. Pages get the
+/// window-manipulation verbs only; anything that could drive the browser
+/// itself (navigate, open or close tabs) is ignored, so a hostile site cannot
+/// steer the chrome it shares a process with.
+fn parse(body: &str, trusted: bool) -> Option<Ev> {
     let m: serde_json::Value = serde_json::from_str(body).ok()?;
-    let url = || m["url"].as_str().unwrap_or_default().to_owned();
     let id = || m["id"].as_u64().unwrap_or_default() as u32;
-    Some(match m["action"].as_str()? {
-        "ready" => match tab {
-            Some(t) => Ev::TabReady(t),
-            None => Ev::ChromeReady,
-        },
-        "navigate" => Ev::Navigate(m["text"].as_str().unwrap_or(&url()).to_owned()),
-        "newtab" => Ev::NewTab(None),
-        "closetab" => Ev::CloseTab(id()),
-        "selecttab" => Ev::SelectTab(id()),
-        "back" => Ev::Back,
-        "forward" => Ev::Forward,
-        "reload" => Ev::Reload,
-        "glasscycle" => Ev::GlassCycle,
-        "focusurl" => Ev::FocusUrl,
+    let action = m["action"].as_str()?;
+
+    let ev = match action {
+        "diag" => Ev::Diag(m["msg"].as_str().unwrap_or_default().to_owned()),
         "drag" => Ev::Drag,
         "minimize" => Ev::Minimize,
-        "close" => Ev::Close,
+        "close" if trusted => Ev::Close,
         "resize" => Ev::Resize(match m["dir"].as_str()? {
             "n" => ResizeDirection::North,
             "s" => ResizeDirection::South,
@@ -160,56 +159,26 @@ fn parse(body: &str, tab: Option<u32>) -> Option<Ev> {
             "sw" => ResizeDirection::SouthWest,
             _ => ResizeDirection::SouthEast,
         }),
-        _ => return None,
-    })
-}
-
-fn new_tab(
-    window: &Window,
-    ctx: &'static mut WebContext,
-    proxy: &EventLoopProxy<Ev>,
-    id: u32,
-    url: &str,
-    bounds: Rect,
-) -> wry::Result<WebView> {
-    let (p_ipc, p_title, p_load, p_new) = (
-        proxy.clone(),
-        proxy.clone(),
-        proxy.clone(),
-        proxy.clone(),
-    );
-
-    let mut b = WebViewBuilder::new_with_web_context(ctx)
-        .with_bounds(bounds)
-        .with_url(url)
-        .with_transparent(true)
-        .with_initialization_script(GLASS_JS)
-        .with_ipc_handler(move |r: Request<String>| {
-            if let Some(ev) = parse(r.body(), Some(id)) {
-                let _ = p_ipc.send_event(ev);
+        "ready" => {
+            if trusted {
+                Ev::ChromeReady
+            } else {
+                Ev::PageReady
             }
-        })
-        .with_document_title_changed_handler(move |t| {
-            let _ = p_title.send_event(Ev::Title(id, t));
-        })
-        .with_on_page_load_handler(move |ev, url| {
-            let _ = p_load.send_event(Ev::Load(id, matches!(ev, PageLoadEvent::Finished), url));
-        })
-        // Deny, then open it ourselves: Create would require sharing the
-        // WebView2 environment, and we want it as a tab regardless.
-        .with_new_window_req_handler(move |url, _| {
-            let _ = p_new.send_event(Ev::NewTab(Some(url)));
-            NewWindowResponse::Deny
-        });
-
-    #[cfg(target_os = "windows")]
-    {
-        use wry::WebViewBuilderExtWindows;
-        // Stop WebView2's built-in shortcuts firing under our own.
-        b = b.with_browser_accelerator_keys(false);
-    }
-
-    b.build_as_child(window)
+        }
+        _ if !trusted => return None,
+        "navigate" => Ev::Navigate(m["text"].as_str().unwrap_or_default().to_owned()),
+        "newtab" => Ev::NewTab(None),
+        "closetab" => Ev::CloseTab(id()),
+        "selecttab" => Ev::SelectTab(id()),
+        "back" => Ev::Back,
+        "forward" => Ev::Forward,
+        "reload" => Ev::Reload,
+        "glasscycle" => Ev::GlassCycle,
+        "focusurl" => Ev::FocusUrl,
+        _ => return None,
+    };
+    Some(ev)
 }
 
 fn main() -> wry::Result<()> {
@@ -239,42 +208,73 @@ fn main() -> wry::Result<()> {
         let _ = window_vibrancy::apply_acrylic(&window, None);
     }
 
-    // One context for every tab, so there is a single cookie jar and logins
-    // persist. Leaked because the builder borrows it for 'a and it must outlive
-    // every webview anyway.
     let ctx: &'static mut WebContext =
         Box::leak(Box::new(WebContext::new(Some(state_dir().join("profile")))));
-    let ctx_ptr: *mut WebContext = ctx;
 
-    let size = window.inner_size();
-    let p_chrome = proxy.clone();
+    let (p_ipc, p_title, p_load, p_new) =
+        (proxy.clone(), proxy.clone(), proxy.clone(), proxy.clone());
 
-    let chrome = WebViewBuilder::new()
-        .with_bounds(Rect {
-            position: PhysicalPosition::new(0, 0).into(),
-            size: PhysicalSize::new(size.width, size.height).into(),
+    // Content: attached to the window itself, never a child. This is the only
+    // arrangement where transparency reaches the acrylic backdrop.
+    let mut cb = WebViewBuilder::new_with_web_context(ctx)
+        .with_url(HOME)
+        .with_transparent(true)
+        .with_initialization_script(GLASS_JS)
+        .with_ipc_handler(move |r: Request<String>| {
+            if let Some(ev) = parse(r.body(), false) {
+                let _ = p_ipc.send_event(ev);
+            }
         })
+        .with_document_title_changed_handler(move |t| {
+            let _ = p_title.send_event(Ev::Title(t));
+        })
+        .with_on_page_load_handler(move |ev, url| {
+            let _ = p_load.send_event(Ev::Load(matches!(ev, PageLoadEvent::Finished), url));
+        })
+        .with_new_window_req_handler(move |url, _| {
+            let _ = p_new.send_event(Ev::NewTab(Some(url)));
+            NewWindowResponse::Deny
+        });
+
+    #[cfg(target_os = "windows")]
+    {
+        use wry::WebViewBuilderExtWindows;
+        cb = cb.with_browser_accelerator_keys(false);
+    }
+
+    let content = cb.build(&window)?;
+
+    // Chrome: a child webview along the bottom. Child HWNDs cannot composite
+    // transparently, but keeping it on its own origin is what stops a page
+    // from reading or spoofing the address bar.
+    let p_chrome = proxy.clone();
+    let chrome = WebViewBuilder::new()
+        .with_bounds(chrome_rect(window.inner_size()))
         .with_transparent(true)
         .with_custom_protocol("prism".into(), |_id, req| serve(&req))
         .with_url("prism://localhost/index.html")
         .with_ipc_handler(move |r: Request<String>| {
-            if let Some(ev) = parse(r.body(), None) {
+            if let Some(ev) = parse(r.body(), true) {
                 let _ = p_chrome.send_event(ev);
             }
         })
         .build_as_child(&window)?;
 
-    let mut tabs: Vec<Tab> = Vec::new();
-    let mut active: u32 = 0;
-    let mut next_id: u32 = 1;
+    let mut tabs: Vec<Tab> = vec![Tab {
+        id: 1,
+        url: HOME.to_owned(),
+        title: String::new(),
+    }];
+    let mut active: u32 = 1;
+    let mut next_id: u32 = 2;
     let mut glass = load_glass();
-
-    let _ = proxy.send_event(Ev::NewTab(None));
+    let mut loading = true;
+    let mut idle_since: Option<Instant> = None;
+    let mut frozen = false;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::WaitUntil(Instant::now() + POLL);
 
-        // Pushes the whole tab list into the chrome UI.
         macro_rules! sync_tabs {
             () => {{
                 let list: Vec<serde_json::Value> = tabs
@@ -284,7 +284,7 @@ fn main() -> wry::Result<()> {
                             "id": t.id,
                             "title": t.title,
                             "active": t.id == active,
-                            "loading": t.loading,
+                            "loading": t.id == active && loading,
                         })
                     })
                     .collect();
@@ -297,117 +297,111 @@ fn main() -> wry::Result<()> {
 
         macro_rules! sync_nav {
             () => {{
-                let (url, back, fwd) = match tabs.iter().find(|t| t.id == active) {
-                    Some(t) => (
-                        t.url.clone(),
-                        t.view.can_go_back().unwrap_or(false),
-                        t.view.can_go_forward().unwrap_or(false),
-                    ),
-                    None => (String::new(), false, false),
-                };
+                let url = tabs
+                    .iter()
+                    .find(|t| t.id == active)
+                    .map(|t| t.url.clone())
+                    .unwrap_or_default();
                 let _ = chrome.evaluate_script(&format!(
                     "window.__prism&&window.__prism.nav({})",
                     serde_json::json!({
                         "url": url,
                         "secure": url.starts_with("https://"),
-                        "canBack": back,
-                        "canFwd": fwd,
+                        "canBack": content.can_go_back().unwrap_or(false),
+                        "canFwd": content.can_go_forward().unwrap_or(false),
                     })
                 ));
             }};
         }
 
-        macro_rules! show_active {
+        macro_rules! sync_glass {
             () => {{
-                for t in tabs.iter_mut() {
-                    let on = t.id == active;
-                    let _ = t.view.set_visible(on);
-                    if on {
-                        t.touched = Instant::now();
-                        if t.frozen {
-                            glass_resume(&t.view);
-                            t.frozen = false;
-                        }
-                    }
+                let _ = chrome.evaluate_script(&format!(
+                    "window.__prism&&window.__prism.glass({},'{}')",
+                    glass,
+                    ["Off", "Frosted", "Clear"][glass as usize]
+                ));
+            }};
+        }
+
+        /// Loads whichever tab is active. Tabs share one webview, so switching
+        /// is a navigation -- live page state does not survive it.
+        macro_rules! open_active {
+            () => {{
+                if let Some(t) = tabs.iter().find(|t| t.id == active) {
+                    loading = true;
+                    let _ = content.load_url(&t.url);
                 }
             }};
         }
 
         match event {
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
-                for t in tabs.iter_mut() {
-                    if t.id != active && !t.frozen && t.touched.elapsed() >= IDLE {
-                        t.frozen = glass_suspend(&t.view);
-                    }
+                let minimized = window.is_minimized();
+                if frozen && !minimized {
+                    resume(&content);
+                    frozen = false;
+                } else if !frozen
+                    && minimized
+                    && idle_since.is_some_and(|t| t.elapsed() >= IDLE)
+                {
+                    frozen = suspend(&content);
                 }
             }
+
+            Event::UserEvent(Ev::Diag(msg)) => diag(&msg),
 
             Event::UserEvent(Ev::ChromeReady) => {
                 sync_tabs!();
                 sync_nav!();
-                let _ = chrome.evaluate_script(&format!(
-                    "window.__prism&&window.__prism.glass({},'{}')",
-                    glass,
-                    ["Off", "Frosted", "Clear"][glass as usize]
-                ));
+                sync_glass!();
             }
 
-            Event::UserEvent(Ev::TabReady(id)) => {
-                if let Some(t) = tabs.iter().find(|t| t.id == id) {
-                    let _ = t.view.evaluate_script(&format!("window.__prismGlass({glass})"));
-                }
+            Event::UserEvent(Ev::PageReady) => {
+                let _ = content.evaluate_script(&format!(
+                    "window.__prismGlass&&window.__prismGlass({glass},{CHROME_H})"
+                ));
             }
 
             Event::UserEvent(Ev::NewTab(url)) => {
                 let id = next_id;
                 next_id += 1;
-                let target = url.unwrap_or_else(|| HOME.to_owned());
-                let bounds = content_rect(window.inner_size());
-                // SAFETY: single-threaded event loop; the context is leaked and
-                // outlives every webview built from it.
-                let ctx_ref: &'static mut WebContext = unsafe { &mut *ctx_ptr };
-                match new_tab(&window, ctx_ref, &proxy, id, &target, bounds) {
-                    Ok(view) => {
-                        tabs.push(Tab {
-                            id,
-                            view,
-                            title: String::new(),
-                            url: target,
-                            loading: true,
-                            touched: Instant::now(),
-                            frozen: false,
-                        });
-                        active = id;
-                        show_active!();
-                        sync_tabs!();
-                        sync_nav!();
-                    }
-                    Err(e) => eprintln!("tab failed: {e}"),
-                }
+                tabs.push(Tab {
+                    id,
+                    url: url.unwrap_or_else(|| HOME.to_owned()),
+                    title: String::new(),
+                });
+                active = id;
+                open_active!();
+                sync_tabs!();
+                sync_nav!();
             }
 
             Event::UserEvent(Ev::CloseTab(id)) => {
                 if let Some(i) = tabs.iter().position(|t| t.id == id) {
-                    let t = tabs.remove(i);
-                    let _ = t.view.set_visible(false);
-                    drop(t);
+                    tabs.remove(i);
                     if tabs.is_empty() {
-                        let _ = proxy.send_event(Ev::NewTab(None));
-                    } else {
-                        if active == id {
-                            active = tabs[i.min(tabs.len() - 1)].id;
-                        }
-                        show_active!();
-                        sync_tabs!();
-                        sync_nav!();
+                        tabs.push(Tab {
+                            id: next_id,
+                            url: HOME.to_owned(),
+                            title: String::new(),
+                        });
+                        active = next_id;
+                        next_id += 1;
+                        open_active!();
+                    } else if active == id {
+                        active = tabs[i.min(tabs.len() - 1)].id;
+                        open_active!();
                     }
+                    sync_tabs!();
+                    sync_nav!();
                 }
             }
 
             Event::UserEvent(Ev::SelectTab(id)) => {
-                if tabs.iter().any(|t| t.id == id) {
+                if id != active && tabs.iter().any(|t| t.id == id) {
                     active = id;
-                    show_active!();
+                    open_active!();
                     sync_tabs!();
                     sync_nav!();
                 }
@@ -415,70 +409,47 @@ fn main() -> wry::Result<()> {
 
             Event::UserEvent(Ev::Navigate(text)) => {
                 let url = to_url(&text);
-                let mut changed = false;
                 if let Some(t) = tabs.iter_mut().find(|t| t.id == active) {
-                    t.loading = true;
-                    let _ = t.view.load_url(&url);
-                    changed = true;
+                    t.url = url.clone();
                 }
-                if changed {
-                    sync_tabs!();
-                }
+                loading = true;
+                let _ = content.load_url(&url);
+                sync_tabs!();
             }
 
             Event::UserEvent(Ev::Back) => {
-                if let Some(t) = tabs.iter().find(|t| t.id == active) {
-                    let _ = t.view.go_back();
-                }
+                let _ = content.go_back();
             }
             Event::UserEvent(Ev::Forward) => {
-                if let Some(t) = tabs.iter().find(|t| t.id == active) {
-                    let _ = t.view.go_forward();
-                }
+                let _ = content.go_forward();
             }
             Event::UserEvent(Ev::Reload) => {
-                if let Some(t) = tabs.iter().find(|t| t.id == active) {
-                    let _ = t.view.reload();
-                }
+                let _ = content.reload();
             }
 
             Event::UserEvent(Ev::GlassCycle) => {
                 glass = (glass + 1) % 3;
                 save_glass(glass);
-                for t in tabs.iter() {
-                    let _ = t.view.evaluate_script(&format!("window.__prismGlass({glass})"));
-                }
-                let _ = chrome.evaluate_script(&format!(
-                    "window.__prism&&window.__prism.glass({},'{}')",
-                    glass,
-                    ["Off", "Frosted", "Clear"][glass as usize]
+                let _ = content.evaluate_script(&format!(
+                    "window.__prismGlass&&window.__prismGlass({glass},{CHROME_H})"
                 ));
+                sync_glass!();
             }
 
-            Event::UserEvent(Ev::Title(id, title)) => {
-                let mut changed = false;
-                if let Some(t) = tabs.iter_mut().find(|t| t.id == id) {
+            Event::UserEvent(Ev::Title(title)) => {
+                if let Some(t) = tabs.iter_mut().find(|t| t.id == active) {
                     t.title = title;
-                    changed = true;
                 }
-                if changed {
-                    sync_tabs!();
-                }
+                sync_tabs!();
             }
 
-            Event::UserEvent(Ev::Load(id, finished, url)) => {
-                let mut changed = false;
-                if let Some(t) = tabs.iter_mut().find(|t| t.id == id) {
+            Event::UserEvent(Ev::Load(finished, url)) => {
+                if let Some(t) = tabs.iter_mut().find(|t| t.id == active) {
                     t.url = url;
-                    t.loading = !finished;
-                    changed = true;
                 }
-                if changed {
-                    sync_tabs!();
-                    if id == active {
-                        sync_nav!();
-                    }
-                }
+                loading = !finished;
+                sync_tabs!();
+                sync_nav!();
             }
 
             Event::UserEvent(Ev::FocusUrl) => {
@@ -494,19 +465,22 @@ fn main() -> wry::Result<()> {
             Event::UserEvent(Ev::Minimize) => window.set_minimized(true),
 
             Event::WindowEvent {
+                event: WindowEvent::Focused(has_focus),
+                ..
+            } => {
+                idle_since = if has_focus { None } else { Some(Instant::now()) };
+                if has_focus && frozen {
+                    resume(&content);
+                    frozen = false;
+                }
+            }
+
+            Event::WindowEvent {
                 event: WindowEvent::Resized(size),
                 ..
             } => {
                 if size.width > 0 && size.height > 0 {
-                    let _ = chrome.set_bounds(Rect {
-                        position: PhysicalPosition::new(0, 0).into(),
-                        size: PhysicalSize::new(size.width, size.height).into(),
-                    });
-                    // Hidden tabs too, or they come back mis-sized.
-                    let r = content_rect(size);
-                    for t in tabs.iter() {
-                        let _ = t.view.set_bounds(r);
-                    }
+                    let _ = chrome.set_bounds(chrome_rect(size));
                 }
             }
 
@@ -516,7 +490,6 @@ fn main() -> wry::Result<()> {
                 ..
             } => {
                 save_glass(glass);
-                tabs.clear();
                 *control_flow = ControlFlow::Exit;
             }
 
@@ -525,27 +498,33 @@ fn main() -> wry::Result<()> {
     });
 }
 
-/// Freezes a background tab's renderer. State is retained, so scroll position
-/// and half-typed input survive; returns whether it actually suspended.
+/// Freezes the renderer. State is retained, so scroll position and typed text
+/// survive; returns whether it actually suspended.
 #[cfg(target_os = "windows")]
-fn glass_suspend(wv: &WebView) -> bool {
+fn suspend(wv: &WebView) -> bool {
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_3;
     use webview2_com::TrySuspendCompletedHandler;
     use windows::core::Interface;
     use wry::{MemoryUsageLevel, WebViewExtWindows};
 
+    if wv.set_visible(false).is_err() {
+        return false;
+    }
     let _ = wv.set_memory_usage_level(MemoryUsageLevel::Low);
     match wv.webview().cast::<ICoreWebView2_3>() {
         Ok(w3) => unsafe {
             w3.TrySuspend(&TrySuspendCompletedHandler::create(Box::new(|_, _| Ok(()))))
                 .is_ok()
         },
-        Err(_) => false,
+        Err(_) => {
+            let _ = wv.set_visible(true);
+            false
+        }
     }
 }
 
 #[cfg(target_os = "windows")]
-fn glass_resume(wv: &WebView) {
+fn resume(wv: &WebView) {
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_3;
     use windows::core::Interface;
     use wry::{MemoryUsageLevel, WebViewExtWindows};
@@ -555,12 +534,13 @@ fn glass_resume(wv: &WebView) {
             let _ = w3.Resume();
         }
     }
+    let _ = wv.set_visible(true);
     let _ = wv.set_memory_usage_level(MemoryUsageLevel::Normal);
 }
 
 #[cfg(not(target_os = "windows"))]
-fn glass_suspend(_: &WebView) -> bool {
+fn suspend(_: &WebView) -> bool {
     false
 }
 #[cfg(not(target_os = "windows"))]
-fn glass_resume(_: &WebView) {}
+fn resume(_: &WebView) {}
