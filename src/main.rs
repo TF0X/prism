@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ublock;
+
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -7,7 +9,7 @@ use std::time::{Duration, Instant};
 use tao::{
     dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
     event::{Event, StartCause, WindowEvent},
-    event_loop::{ControlFlow, EventLoopBuilder},
+    event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
     window::{ResizeDirection, Window, WindowBuilder},
 };
 use wry::{
@@ -49,6 +51,9 @@ enum Ev {
     Resize(ResizeDirection),
     Minimize,
     Close,
+    Shield(bool, String),
+    /// Ctrl+W: the keyboard has no tab id, so it always means the active one.
+    CloseTabActive,
 }
 
 struct Tab {
@@ -57,7 +62,7 @@ struct Tab {
     title: String,
 }
 
-fn state_dir() -> PathBuf {
+pub fn state_dir() -> PathBuf {
     let dir = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("prism");
@@ -214,7 +219,17 @@ fn main() -> wry::Result<()> {
     }
 
     let ctx: &'static mut WebContext =
-        Box::leak(Box::new(WebContext::new(Some(state_dir().join("profile")))));
+        // Named apart from a plain "profile": wry warns that webviews differing
+        // in their browser-extension setting must not share a data directory.
+        Box::leak(Box::new(WebContext::new(Some(
+            state_dir().join("profile-ext"),
+        ))));
+
+    // Nothing is unpacked on a cold start, and an extension can only be
+    // registered as the webview is built -- so that one case is worth the wait
+    // rather than shipping an unprotected first session.
+    ublock::ensure_first_run();
+    ublock::spawn_sync(proxy.clone());
 
     let (p_ipc, p_title, p_load, p_new) =
         (proxy.clone(), proxy.clone(), proxy.clone(), proxy.clone());
@@ -244,10 +259,16 @@ fn main() -> wry::Result<()> {
     #[cfg(target_os = "windows")]
     {
         use wry::WebViewBuilderExtWindows;
-        cb = cb.with_browser_accelerator_keys(false);
+        cb = cb
+            .with_browser_accelerator_keys(false)
+            // wry loads every immediate subfolder of this path as an unpacked
+            // extension, re-adding each launch (same id simply replaces).
+            .with_browser_extensions_enabled(true)
+            .with_extensions_path(ublock::root());
     }
 
     let content = cb.build(&window)?;
+    accelerators(&content, &proxy);
 
     // Chrome lives in its own borderless window owned by the main one, for the
     // same reason tabs would: a child webview gets an opaque surface, so the
@@ -289,6 +310,7 @@ fn main() -> wry::Result<()> {
             }
         })
         .build(&chrome_win)?;
+    accelerators(&chrome, &proxy);
 
     let main_id = window.id();
     let mut tabs: Vec<Tab> = vec![Tab {
@@ -297,6 +319,7 @@ fn main() -> wry::Result<()> {
         title: String::new(),
     }];
     let mut active: u32 = 1;
+    let mut shield: Option<(bool, String)> = None;
     let mut next_id: u32 = 2;
     let mut glass = load_glass();
     let mut loading = true;
@@ -386,6 +409,24 @@ fn main() -> wry::Result<()> {
                 sync_tabs!();
                 sync_nav!();
                 sync_glass!();
+                if let Some((on, label)) = &shield {
+                    let _ = chrome.evaluate_script(&format!(
+                        "window.__prism&&window.__prism.shield({on},{})",
+                        serde_json::Value::String(label.clone())
+                    ));
+                }
+            }
+
+            Event::UserEvent(Ev::Shield(on, label)) => {
+                let _ = chrome.evaluate_script(&format!(
+                    "window.__prism&&window.__prism.shield({on},{})",
+                    serde_json::Value::String(label.clone())
+                ));
+                shield = Some((on, label));
+            }
+
+            Event::UserEvent(Ev::CloseTabActive) => {
+                let _ = proxy.send_event(Ev::CloseTab(active));
             }
 
             Event::UserEvent(Ev::PageReady) => {
@@ -542,6 +583,56 @@ fn main() -> wry::Result<()> {
         }
     });
 }
+
+/// Routes Ctrl shortcuts to us even while focus is inside a page.
+///
+/// tao never sees these: the keystroke belongs to the WebView2 controller, so
+/// it has to be intercepted there. Registered on every webview, chrome and
+/// content alike, and `SetHandled(true)` swallows the key so the page below
+/// does not also act on it.
+#[cfg(target_os = "windows")]
+fn accelerators(wv: &WebView, proxy: &EventLoopProxy<Ev>) {
+    use webview2_com::AcceleratorKeyPressedEventHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL};
+    use wry::WebViewExtWindows;
+
+    let proxy = proxy.clone();
+    let mut token = 0i64;
+    let handler = AcceleratorKeyPressedEventHandler::create(Box::new(move |_, args| {
+        let Some(args) = args else { return Ok(()) };
+        unsafe {
+            let mut kind = COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN;
+            args.KeyEventKind(&mut kind)?;
+            if kind != COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN {
+                return Ok(());
+            }
+            // Modifiers are not in the args; read the live keyboard state.
+            if GetKeyState(VK_CONTROL.0 as i32) >= 0 {
+                return Ok(());
+            }
+            let mut vk = 0u32;
+            args.VirtualKey(&mut vk)?;
+            let ev = match vk {
+                0x54 => Ev::NewTab(None),  // T
+                0x57 => Ev::CloseTabActive, // W
+                0x4C => Ev::FocusUrl,      // L
+                0x52 => Ev::Reload,        // R
+                _ => return Ok(()),
+            };
+            let _ = proxy.send_event(ev);
+            args.SetHandled(true)?;
+        }
+        Ok(())
+    }));
+
+    unsafe {
+        let _ = wv.controller().add_AcceleratorKeyPressed(&handler, &mut token);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn accelerators(_: &WebView, _: &EventLoopProxy<Ev>) {}
 
 /// What sits behind the page.
 ///

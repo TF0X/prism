@@ -156,6 +156,14 @@
   }
   #url::placeholder { color: rgba(255,255,255,.3); }
 
+  #shield {
+    flex: 0 0 auto; height: 19px; padding: 0 7px; border-radius: 5px;
+    background: rgba(127,166,255,.16); color: #7FA6FF;
+    font-size: 9.5px; font-weight: 700; letter-spacing: .4px;
+    display: none; align-items: center; cursor: default;
+  }
+  #shield.on { display: flex; }
+
   #glass {
     flex: 0 0 auto; width: 27px; height: 27px; border: 0; border-radius: 7px;
     background: transparent; color: var(--ink-dim); cursor: pointer;
@@ -200,6 +208,7 @@
         <span id="lock"></span>
         <input id="url" type="text" spellcheck="false" autocomplete="off"
                placeholder="Search or enter address">
+        <span id="shield" title="uBlock Origin">uBO</span>
       </div>
       <button id="glass" title="Page glass">&#9681;</button>
     </div>
@@ -333,6 +342,12 @@
       b.classList.toggle("lit", level > 0);
       b.title = "Page glass: " + name;
       b.textContent = level === 0 ? "○" : level === 1 ? "◑" : "●";
+    },
+
+    shield: function (on, label) {
+      var s = $("shield");
+      s.classList.toggle("on", !!on);
+      if (label) s.title = label;
     },
 
     focusUrl: function () { url.focus(); url.select(); }
