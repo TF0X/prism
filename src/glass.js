@@ -247,6 +247,13 @@
         .observe(document.body, { childList: true, subtree: true });
     }
     addEventListener("resize", function () { if (level) settle(); }, { passive: true });
+
+    // Safety net: the mutation observer catches most changes, but a surface
+    // that loads its background late, or a mutation that settled before the
+    // element appeared, can slip through. A periodic re-sweep mops those up.
+    // Cheap because paint() is a bounded walk and only runs while glass is on.
+    setInterval(function () { if (level) paint(); }, 120000);
+
     send("ready");
   }
 

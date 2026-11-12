@@ -694,7 +694,7 @@ fn backdrop(win: &Window) {
         flags: 2, // draw the accent over the whole client area
         // Light, low-alpha frost: enough to read text over, nowhere near the
         // opaque dark of Win11's own acrylic. Low alpha => more see-through.
-        gradient_color: 0x34_1E_1A_16, // A=0x34, B=0x1E, G=0x1A, R=0x16
+        gradient_color: 0x0D_1E_1A_16, // A=0x0D (~0.05), B=0x1E, G=0x1A, R=0x16
         animation_id: 0,
     };
     let mut data = CompAttrData {
