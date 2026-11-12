@@ -634,20 +634,78 @@ fn accelerators(wv: &WebView, proxy: &EventLoopProxy<Ev>) {
 #[cfg(not(target_os = "windows"))]
 fn accelerators(_: &WebView, _: &EventLoopProxy<Ev>) {}
 
-/// What sits behind the page: a Gaussian blur-behind.
+/// What sits behind the page: a real Gaussian blur of the desktop, with a tint
+/// we choose (so it is *not* forced dark the way Win11 acrylic is).
 ///
-/// Deliberately `apply_blur`, not `apply_acrylic`. On Windows 11 acrylic takes
-/// the DWM system-backdrop path, a heavily tinted frost whose colour cannot be
-/// adjusted -- on a dark theme it just reads as dark grey. The legacy
-/// blur-behind frosts whatever is behind the window while staying far lighter,
-/// which is the "see-through but blurred" look. A faint tint lifts contrast so
-/// white text stays readable; `PRISM_NOBLUR=1` turns it off for plain glass.
+/// This calls the undocumented SetWindowCompositionAttribute with accent state
+/// ACCENT_ENABLE_ACRYLICBLURBEHIND directly. window-vibrancy's apply_acrylic
+/// will not do this on build 22621+ -- it switches to the DWM system backdrop,
+/// whose tint is fixed dark -- and apply_blur's lighter blur-behind simply does
+/// not render on recent Windows 11 at all. The accent-state acrylic still
+/// blurs, at the cost of some lag while resizing. `PRISM_NOBLUR=1` disables it.
+///
+/// gradient_color is 0xAABBGGRR: alpha then blue, green, red.
 #[cfg(target_os = "windows")]
 fn backdrop(win: &Window) {
-    if std::env::var_os("PRISM_NOBLUR").is_some() {
-        return;
+    use std::ffi::c_void;
+    use tao::platform::windows::WindowExtWindows;
+    use windows::Win32::Foundation::HWND;
+
+    #[repr(C)]
+    struct AccentPolicy {
+        state: u32,
+        flags: u32,
+        gradient_color: u32,
+        animation_id: u32,
     }
-    let _ = window_vibrancy::apply_blur(win, Some((18, 18, 26, 90)));
+    #[repr(C)]
+    struct CompAttrData {
+        attribute: u32,
+        data: *mut c_void,
+        size: usize,
+    }
+
+    // Undocumented: not in user32's import library, so resolve it at runtime.
+    type SetWca = unsafe extern "system" fn(HWND, *mut CompAttrData) -> i32;
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+    use windows::core::{s, w};
+
+    let set_wca: SetWca = unsafe {
+        let Ok(user32) = GetModuleHandleW(w!("user32.dll")) else {
+            return;
+        };
+        match GetProcAddress(user32, s!("SetWindowCompositionAttribute")) {
+            Some(p) => std::mem::transmute::<_, SetWca>(p),
+            None => return,
+        }
+    };
+
+    const WCA_ACCENT_POLICY: u32 = 19;
+    const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
+    const ACCENT_DISABLED: u32 = 0;
+
+    let disabled = std::env::var_os("PRISM_NOBLUR").is_some();
+    let mut accent = AccentPolicy {
+        state: if disabled {
+            ACCENT_DISABLED
+        } else {
+            ACCENT_ENABLE_ACRYLICBLURBEHIND
+        },
+        flags: 2, // draw the accent over the whole client area
+        // Light, low-alpha frost: enough to read text over, nowhere near the
+        // opaque dark of Win11's own acrylic. Low alpha => more see-through.
+        gradient_color: 0x34_1E_1A_16, // A=0x34, B=0x1E, G=0x1A, R=0x16
+        animation_id: 0,
+    };
+    let mut data = CompAttrData {
+        attribute: WCA_ACCENT_POLICY,
+        data: &mut accent as *mut _ as *mut c_void,
+        size: std::mem::size_of::<AccentPolicy>(),
+    };
+    unsafe {
+        let hwnd = HWND(win.hwnd() as *mut c_void);
+        set_wca(hwnd, &mut data);
+    }
 }
 
 #[cfg(not(target_os = "windows"))]

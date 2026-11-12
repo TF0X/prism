@@ -9,10 +9,13 @@
 (function () {
   "use strict";
 
+  // Kept light on purpose: the window's acrylic-blur backdrop already adds its
+  // own tint, so a heavy page tint on top just smothers the blur. These only
+  // need to lift text contrast a little over the frosted desktop.
   var LEVELS = [
     { alpha: 1,    name: "Off" },
-    { alpha: 0.45, name: "Frosted" },
-    { alpha: 0.15, name: "Clear" }
+    { alpha: 0.22, name: "Frosted" },
+    { alpha: 0.06, name: "Clear" }
   ];
   var SKIP = { SCRIPT: 1, STYLE: 1, IMG: 1, VIDEO: 1, CANVAS: 1, SVG: 1, TEXTAREA: 1, INPUT: 1 };
   var STYLE_ID = "__prism_glass";
