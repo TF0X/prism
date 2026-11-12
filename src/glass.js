@@ -26,6 +26,7 @@
   var base = null;
   var baseLocked = false;
   var timer = null;
+  var chromeOffset = 0; // px the page is pushed down for the top chrome bar
 
   function send(action, extra) {
     var m = { action: action };
@@ -75,11 +76,14 @@
   // Breadth-first and node-capped, so a huge page cannot turn this into a
   // layout-thrashing crawl.
   function clearSurfaces(root) {
+    // Caps are generous: deep SPA shells like YouTube bury their filter bars
+    // well below a shallow walk. Still bounded so a pathological page cannot
+    // hang, and the whole sweep is debounced and runs rarely.
     var queue = [[root, 0]];
     var seen = 0;
-    while (queue.length && seen < 800) {
+    while (queue.length && seen < 2500) {
       var item = queue.shift();
-      if (item[1] > 8 || !item[0].children) continue;
+      if (item[1] > 12 || !item[0].children) continue;
 
       for (var i = 0; i < item[0].children.length; i++) {
         var e = item[0].children[i];
@@ -90,11 +94,16 @@
         if (r.width >= innerWidth * 0.6) {
           var cs = getComputedStyle(e);
           var full = r.height >= innerHeight * 0.4;
-          // Headers, toolbars and composer bars: full width but short.
+          // Headers, toolbars, filter and composer bars: full width but short.
+          // A short band is treated as chrome whatever its position -- relying on
+          // fixed/sticky or edge-touching misses YouTube's absolute masthead,
+          // and our own chrome-bar transform shifts page-top elements down past
+          // any "touching the top" test, so compare against chromeOffset.
           var bar =
             !full && r.height >= 24 &&
-            (cs.position === "fixed" || cs.position === "sticky" ||
-             r.top <= 2 || r.bottom >= innerHeight - 2);
+            (r.height <= 108 ||
+             cs.position === "fixed" || cs.position === "sticky" ||
+             r.top <= chromeOffset + 4 || r.bottom >= innerHeight - 4);
 
           if (full || bar) {
             var m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/.exec(cs.backgroundColor);
@@ -121,6 +130,50 @@
       }
     }
   }
+
+  // Debug: walk up from a point and report the first element with an opaque or
+  // image background, plus how it scores against each clearSurfaces test, so we
+  // can see exactly why a bar was left solid. Fires only when Rust turns diag on.
+  function probe(label, x, y) {
+    var stack = document.elementsFromPoint(x, y) || [];
+    for (var i = 0; i < stack.length; i++) {
+      var e = stack[i];
+      if (e.id === "__prism_grips" || e.tagName === "HTML" || e.tagName === "BODY") continue;
+      var cs = getComputedStyle(e);
+      var m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/.exec(cs.backgroundColor);
+      var opaque = m && (m[4] === undefined || parseFloat(m[4]) > 0.9);
+      var img = cs.backgroundImage && cs.backgroundImage !== "none";
+      if (!opaque && !img) continue;        // transparent layer, keep digging
+      var r = e.getBoundingClientRect();
+      var full = r.height >= innerHeight * 0.4;
+      var wideEnough = r.width >= innerWidth * 0.6;
+      var bar = !full && r.height >= 24 &&
+        (r.height <= 108 || cs.position === "fixed" || cs.position === "sticky" ||
+         r.top <= chromeOffset + 4 || r.bottom >= innerHeight - 4);
+      send("diag", { msg:
+        label + " -> " + e.tagName.toLowerCase() +
+        "#" + (e.id || "") + "." + String(e.className).slice(0, 40) +
+        " bg=" + cs.backgroundColor + (img ? " +img" : "") +
+        " pos=" + cs.position +
+        " " + Math.round(r.width) + "x" + Math.round(r.height) + "@y" + Math.round(r.top) +
+        " | wide=" + wideEnough + " full=" + full + " bar=" + bar +
+        " matched=" + (!!m) + " => " + ((wideEnough && (full || bar)) ? "SHOULD-CLEAR" : "SKIPPED")
+      });
+      return;
+    }
+    send("diag", { msg: label + " -> nothing opaque in stack" });
+  }
+
+  window.__prismProbe = function () {
+    // Content is pushed down by the chrome bar (translateY), so a page header
+    // sits a little below the top of the viewport, not at y=0. Step down to
+    // find it, and probe a couple of x positions to dodge centred logos/search.
+    var xs = [Math.round(innerWidth * 0.5), Math.round(innerWidth * 0.14)];
+    [84, 100, 120, 150].forEach(function (y, i) {
+      xs.forEach(function (x, j) { probe("TOP" + i + "_" + j, x, y); });
+    });
+    probe("MID", xs[0], Math.round(innerHeight / 2));
+  };
 
   /// Drops the inline backgrounds we put on <html>/<body>.
   function clearRoot() {
@@ -189,6 +242,7 @@
   window.__prismGlass = function (n, chromeH) {
     level = Math.max(0, Math.min(LEVELS.length - 1, n | 0));
     if (chromeH) {
+      chromeOffset = chromeH;
       reserveHeader(chromeH);
       grips(chromeH);
     }

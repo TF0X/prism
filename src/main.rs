@@ -433,6 +433,12 @@ fn main() -> wry::Result<()> {
                 let _ = content.evaluate_script(&format!(
                     "window.__prismGlass&&window.__prismGlass({glass},{CHROME_H})"
                 ));
+                if std::env::var_os("PRISM_DIAG").is_some() {
+                    // Probe after the page has settled its late CSS.
+                    let _ = content.evaluate_script(
+                        "setTimeout(function(){window.__prismProbe&&window.__prismProbe()},4000)",
+                    );
+                }
             }
 
             Event::UserEvent(Ev::NewTab(url)) => {
