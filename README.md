@@ -8,8 +8,6 @@
 ![Rust](https://img.shields.io/badge/rust-stable-orange)
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 
-![Prism](docs/screenshot.png)
-
 Prism is a frameless browser whose pages — and its own chrome — frost the desktop
 behind them, so the whole window reads as glass. It ships uBlock Origin Lite baked
 in, suspends idle tabs to claw back memory, and weighs about **3.9 MB** on disk
