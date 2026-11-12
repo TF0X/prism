@@ -634,18 +634,20 @@ fn accelerators(wv: &WebView, proxy: &EventLoopProxy<Ev>) {
 #[cfg(not(target_os = "windows"))]
 fn accelerators(_: &WebView, _: &EventLoopProxy<Ev>) {}
 
-/// What sits behind the page.
+/// What sits behind the page: a Gaussian blur-behind.
 ///
-/// Not `apply_acrylic`: on Windows 11 that takes the DWM system-backdrop path,
-/// which is a heavily tinted frost whose colour cannot be adjusted -- on a dark
-/// theme it just reads as dark grey rather than see-through. `PRISM_BLUR=1`
-/// opts into the legacy blur-behind, which frosts but stays lighter. The
-/// default is no backdrop at all, so transparent regions show the desktop.
+/// Deliberately `apply_blur`, not `apply_acrylic`. On Windows 11 acrylic takes
+/// the DWM system-backdrop path, a heavily tinted frost whose colour cannot be
+/// adjusted -- on a dark theme it just reads as dark grey. The legacy
+/// blur-behind frosts whatever is behind the window while staying far lighter,
+/// which is the "see-through but blurred" look. A faint tint lifts contrast so
+/// white text stays readable; `PRISM_NOBLUR=1` turns it off for plain glass.
 #[cfg(target_os = "windows")]
 fn backdrop(win: &Window) {
-    if std::env::var_os("PRISM_BLUR").is_some() {
-        let _ = window_vibrancy::apply_blur(win, Some((0, 0, 0, 40)));
+    if std::env::var_os("PRISM_NOBLUR").is_some() {
+        return;
     }
+    let _ = window_vibrancy::apply_blur(win, Some((18, 18, 26, 90)));
 }
 
 #[cfg(not(target_os = "windows"))]
