@@ -436,7 +436,7 @@ fn main() -> wry::Result<()> {
                 if std::env::var_os("PRISM_DIAG").is_some() {
                     // Probe after the page has settled its late CSS.
                     let _ = content.evaluate_script(
-                        "setTimeout(function(){window.__prismProbe&&window.__prismProbe()},4000)",
+                        "setTimeout(function(){window.__prismAudit&&window.__prismAudit()},5000)",
                     );
                 }
             }

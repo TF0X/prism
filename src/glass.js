@@ -91,21 +91,30 @@
         seen++;
 
         var r = e.getBoundingClientRect();
-        if (r.width >= innerWidth * 0.6) {
+        var wide = r.width >= innerWidth * 0.6;
+        // A tall narrow band hugging the left or right edge is a nav rail --
+        // the one kind of chrome that is not full-width. Checked on the cheap
+        // rect before the expensive style read.
+        var railShape =
+          !wide && r.height >= innerHeight * 0.4 &&
+          r.width >= 80 && r.width <= innerWidth * 0.34 &&
+          (r.left <= 2 || r.right >= innerWidth - 2);
+
+        if (wide || railShape) {
           var cs = getComputedStyle(e);
-          var full = r.height >= innerHeight * 0.4;
+          var full = wide && r.height >= innerHeight * 0.4;
           // Headers, toolbars, filter and composer bars: full width but short.
           // A short band is treated as chrome whatever its position -- relying on
           // fixed/sticky or edge-touching misses YouTube's absolute masthead,
           // and our own chrome-bar transform shifts page-top elements down past
           // any "touching the top" test, so compare against chromeOffset.
           var bar =
-            !full && r.height >= 24 &&
+            wide && !full && r.height >= 24 &&
             (r.height <= 108 ||
              cs.position === "fixed" || cs.position === "sticky" ||
              r.top <= chromeOffset + 4 || r.bottom >= innerHeight - 4);
 
-          if (full || bar) {
+          if (full || bar || railShape) {
             var m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/.exec(cs.backgroundColor);
             var opaque = m && (m[4] === undefined || parseFloat(m[4]) > 0.9);
             var img = cs.backgroundImage && cs.backgroundImage !== "none";
@@ -163,6 +172,36 @@
     }
     send("diag", { msg: label + " -> nothing opaque in stack" });
   }
+
+  // Full audit: every element with an opaque background covering a meaningful
+  // area that survived the sweep, largest first. Answers "what is still solid".
+  window.__prismAudit = function () {
+    var all = document.querySelectorAll("*");
+    var hits = [];
+    for (var i = 0; i < all.length; i++) {
+      var e = all[i];
+      if (SKIP[e.tagName] || e.id === "__prism_grips") continue;
+      var cs = getComputedStyle(e);
+      var m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/.exec(cs.backgroundColor);
+      var opaque = m && (m[4] === undefined || parseFloat(m[4]) > 0.85);
+      if (!opaque) continue;
+      var r = e.getBoundingClientRect();
+      var area = r.width * r.height;
+      if (area < innerWidth * innerHeight * 0.03) continue; // ignore small bits
+      hits.push({ e: e, r: r, area: area, bg: cs.backgroundColor, pos: cs.position });
+    }
+    hits.sort(function (a, b) { return b.area - a.area; });
+    send("diag", { msg: "AUDIT " + hits.length + " opaque surfaces >=3% area" });
+    hits.slice(0, 8).forEach(function (h, k) {
+      send("diag", { msg:
+        "#" + k + " " + h.e.tagName.toLowerCase() + "#" + (h.e.id || "") +
+        "." + String(h.e.className).slice(0, 36) +
+        " bg=" + h.bg + " pos=" + h.pos +
+        " " + Math.round(h.r.width) + "x" + Math.round(h.r.height) +
+        " @y" + Math.round(h.r.top)
+      });
+    });
+  };
 
   window.__prismProbe = function () {
     // Content is pushed down by the chrome bar (translateY), so a page header
