@@ -27,7 +27,7 @@ const GLASS_JS: &str = include_str!("glass.js");
 /// pushed down from inside instead -- see the offset in glass.js.
 const CHROME_H: u32 = 76;
 
-const HOME: &str = "https://www.youtube.com";
+const HOME: &str = "https://www.google.com";
 /// Freeze the renderer once the window has been minimized this long.
 const IDLE: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_secs(15);
@@ -395,10 +395,7 @@ fn main() -> wry::Result<()> {
                 if frozen && !minimized {
                     resume(&content);
                     frozen = false;
-                } else if !frozen
-                    && minimized
-                    && idle_since.is_some_and(|t| t.elapsed() >= IDLE)
-                {
+                } else if !frozen && minimized && idle_since.is_some_and(|t| t.elapsed() >= IDLE) {
                     frozen = suspend(&content);
                 }
             }
@@ -546,7 +543,11 @@ fn main() -> wry::Result<()> {
                 event: WindowEvent::Focused(has_focus),
                 ..
             } => {
-                idle_since = if has_focus { None } else { Some(Instant::now()) };
+                idle_since = if has_focus {
+                    None
+                } else {
+                    Some(Instant::now())
+                };
                 if has_focus && frozen {
                     resume(&content);
                     frozen = false;
@@ -620,10 +621,10 @@ fn accelerators(wv: &WebView, proxy: &EventLoopProxy<Ev>) {
             let mut vk = 0u32;
             args.VirtualKey(&mut vk)?;
             let ev = match vk {
-                0x54 => Ev::NewTab(None),  // T
+                0x54 => Ev::NewTab(None),   // T
                 0x57 => Ev::CloseTabActive, // W
-                0x4C => Ev::FocusUrl,      // L
-                0x52 => Ev::Reload,        // R
+                0x4C => Ev::FocusUrl,       // L
+                0x52 => Ev::Reload,         // R
                 _ => return Ok(()),
             };
             let _ = proxy.send_event(ev);
@@ -633,7 +634,9 @@ fn accelerators(wv: &WebView, proxy: &EventLoopProxy<Ev>) {
     }));
 
     unsafe {
-        let _ = wv.controller().add_AcceleratorKeyPressed(&handler, &mut token);
+        let _ = wv
+            .controller()
+            .add_AcceleratorKeyPressed(&handler, &mut token);
     }
 }
 

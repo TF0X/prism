@@ -34,7 +34,9 @@ fn stamp() -> PathBuf {
 }
 
 pub fn installed_tag() -> Option<String> {
-    std::fs::read_to_string(stamp()).ok().map(|s| s.trim().to_owned())
+    std::fs::read_to_string(stamp())
+        .ok()
+        .map(|s| s.trim().to_owned())
 }
 
 pub fn is_installed() -> bool {
@@ -43,25 +45,24 @@ pub fn is_installed() -> bool {
 
 /// Latest upstream release: (tag, zip download URL).
 fn latest() -> Option<(String, String)> {
-    let body = ureq::get(&format!("https://api.github.com/repos/{REPO}/releases/latest"))
-        .header("User-Agent", UA)
-        .header("Accept", "application/vnd.github+json")
-        .call()
-        .ok()?
-        .body_mut()
-        .read_to_string()
-        .ok()?;
+    let body = ureq::get(&format!(
+        "https://api.github.com/repos/{REPO}/releases/latest"
+    ))
+    .header("User-Agent", UA)
+    .header("Accept", "application/vnd.github+json")
+    .call()
+    .ok()?
+    .body_mut()
+    .read_to_string()
+    .ok()?;
 
     let v: serde_json::Value = serde_json::from_str(&body).ok()?;
     let tag = v["tag_name"].as_str()?.to_owned();
-    let url = v["assets"]
-        .as_array()?
-        .iter()
-        .find(|a| {
-            a["name"]
-                .as_str()
-                .is_some_and(|n| n.ends_with(".chromium.zip"))
-        })?["browser_download_url"]
+    let url = v["assets"].as_array()?.iter().find(|a| {
+        a["name"]
+            .as_str()
+            .is_some_and(|n| n.ends_with(".chromium.zip"))
+    })?["browser_download_url"]
         .as_str()?
         .to_owned();
     Some((tag, url))
